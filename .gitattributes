@@ -1,0 +1,8 @@
+# Normalize line endings: LF in the repo for all text files.
+* text=auto eol=lf
+*.go   text eol=lf
+*.mod  text eol=lf
+*.md   text eol=lf
+
+# Binaries
+*.exe  binary
