@@ -1,11 +1,21 @@
-# scopehound
+# scan7x
 
 **Pull a bug-bounty program's scope, then recon it — in one command.**
 Pick a platform (HackerOne / Bugcrowd / Intigriti / YesWeHack), type a target
 (e.g. `red bull`), choose what to pull (domains / APIs / wildcards / …), and
-scopehound downloads the scope, enumerates subdomains, probes live hosts,
+scan7x downloads the scope, enumerates subdomains, probes live hosts,
 harvests JavaScript, extracts endpoints, and writes a clean report — all in Go,
 with **zero external dependencies** and **no API keys required**.
+
+```text
+  ███████╗ ██████╗ █████╗ ███╗   ██╗███████╗██╗  ██╗
+  ██╔════╝██╔════╝██╔══██╗████╗  ██║╚════██║╚██╗██╔╝
+  ███████╗██║     ███████║██╔██╗ ██║    ██╔╝ ╚███╔╝
+  ╚════██║██║     ██╔══██║██║╚██╗██║   ██╔╝  ██╔██╗
+  ███████║╚██████╗██║  ██║██║ ╚████║   ██║  ██╔╝ ██╗
+  ╚══════╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═══╝   ╚═╝  ╚═╝  ╚═╝
+        bug-bounty recon & enumeration engine
+```
 
 ---
 
@@ -27,14 +37,14 @@ with **zero external dependencies** and **no API keys required**.
 يحتاج فقط **Go 1.22+**. حمّله من <https://go.dev/dl/>.
 
 ```bash
-git clone https://github.com/<your-username>/scopehound.git
-cd scopehound
-go build -o scopehound ./...      # على ويندوز: go build -o scopehound.exe ./...
+git clone https://github.com/<your-username>/scan7x.git
+cd scan7x
+go build -o scan7x ./...      # على ويندوز: go build -o scan7x.exe ./...
 ```
 
-بعد البناء تحصل ملف تنفيذي واحد اسمه `scopehound` (أو `scopehound.exe`).
+بعد البناء تحصل ملف تنفيذي واحد اسمه `scan7x` (أو `scan7x.exe`).
 
-> اختياري: لتفعيل `go install github.com/<your-username>/scopehound@latest`
+> اختياري: لتفعيل `go install github.com/<your-username>/scan7x@latest`
 > عدّل أول سطر في `go.mod` ليطابق رابط مستودعك.
 
 ---
@@ -46,7 +56,7 @@ go build -o scopehound ./...      # على ويندوز: go build -o scopehound.
 شغّل الأداة بدون أي خيارات وتمشّي معك خطوة بخطوة:
 
 ```bash
-./scopehound
+./scan7x
 ```
 
 ```
@@ -79,16 +89,16 @@ Choice [3]: 3
 
 ```bash
 # ابحث في كل المنصات عن "red bull" وسوِّ recon كامل
-./scopehound -target "red bull"
+./scan7x -target "red bull"
 
 # HackerOne فقط، اسحب النطاقات والـ wildcards، recon passive
-./scopehound -platform hackerone -target uber -pull domains,wildcards -recon passive
+./scan7x -platform hackerone -target uber -pull domains,wildcards -recon passive
 
 # فقط اسحب وصنّف الـ scope بدون أي recon
-./scopehound -target shopify -recon scope
+./scan7x -target shopify -recon scope
 
 # تخطَّ البحث في المنصات وسوِّ recon مباشرة على نطاقات تعرفها
-./scopehound -root example.com,api.example.com -recon full -o ./out/example
+./scan7x -root example.com,api.example.com -recon full -o ./out/example
 ```
 
 ---

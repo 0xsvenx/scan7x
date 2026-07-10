@@ -1,3 +1,3 @@
-module scopehound
+module scan7x
 
 go 1.22

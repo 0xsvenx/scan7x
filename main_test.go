@@ -74,9 +74,9 @@ func TestExtractEndpoints(t *testing.T) {
 	js := []byte(`var a="/api/v1/users";fetch('https://api.example.com/graphql');let b=` + "`" + `//cdn.example.com/x.js` + "`" + `;var junk="//AAAAAAAAAAAAAAAA";`)
 	got := extractEndpoints(js)
 	want := map[string]bool{
-		"/api/v1/users":                true,
+		"/api/v1/users":                   true,
 		"https://api.example.com/graphql": true,
-		"//cdn.example.com/x.js":       true,
+		"//cdn.example.com/x.js":          true,
 	}
 	for _, e := range got {
 		if !want[e] {

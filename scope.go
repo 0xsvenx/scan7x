@@ -182,7 +182,7 @@ func cacheDir() string {
 	if err != nil || base == "" {
 		base = os.TempDir()
 	}
-	return filepath.Join(base, "scopehound")
+	return filepath.Join(base, "scan7x")
 }
 
 // fetchPlatform returns the raw program list for a platform, using a <24h cache

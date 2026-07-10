@@ -23,7 +23,11 @@ var (
 
 // logf prints progress/diagnostics to stderr so stdout stays result-only.
 func logf(format string, a ...any) {
-	fmt.Fprintf(os.Stderr, format+"\n", a...)
+	msg := fmt.Sprintf(format, a...)
+	if useColor {
+		msg = colorizeTags(msg)
+	}
+	fmt.Fprintln(os.Stderr, msg)
 }
 
 // normalizeHost extracts a bare hostname from a scope identifier or URL.

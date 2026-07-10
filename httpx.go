@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const userAgent = "scopehound/1.0 (bug-bounty recon)"
+const userAgent = "scan7x/1.0 (bug-bounty recon)"
 
 // maxRespBody caps how much we read from any single response.
 const maxRespBody = 30 << 20 // 30 MiB

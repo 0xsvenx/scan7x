@@ -29,6 +29,7 @@ type options struct {
 	wbLimit  int
 	refresh  bool
 	yes      bool
+	noColor  bool
 }
 
 func main() {
@@ -48,27 +49,29 @@ func main() {
 	flag.IntVar(&opt.wbLimit, "wayback-limit", 20000, "max URLs per target from Wayback (0 = unlimited)")
 	flag.BoolVar(&opt.refresh, "refresh", false, "force refresh of cached scope data")
 	flag.BoolVar(&opt.yes, "y", false, "non-interactive: use flags/defaults, never prompt")
+	flag.BoolVar(&opt.noColor, "no-color", false, "disable colored output")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "scopehound %s — pull bug-bounty scope, then recon it.\n\n", version)
+		fmt.Fprintf(os.Stderr, "scan7x %s — pull bug-bounty scope, then recon it.\n\n", version)
 		fmt.Fprintln(os.Stderr, "Examples:")
-		fmt.Fprintln(os.Stderr, "  scopehound                                   # interactive wizard")
-		fmt.Fprintln(os.Stderr, "  scopehound -target \"red bull\"                # search all platforms, full recon")
-		fmt.Fprintln(os.Stderr, "  scopehound -platform hackerone -target uber -pull domains,wildcards -recon passive")
-		fmt.Fprintln(os.Stderr, "  scopehound -root example.com -recon full     # skip scope lookup")
+		fmt.Fprintln(os.Stderr, "  scan7x                                   # interactive wizard")
+		fmt.Fprintln(os.Stderr, "  scan7x -target \"red bull\"                # search all platforms, full recon")
+		fmt.Fprintln(os.Stderr, "  scan7x -platform hackerone -target uber -pull domains,wildcards -recon passive")
+		fmt.Fprintln(os.Stderr, "  scan7x -root example.com -recon full     # skip scope lookup")
 		fmt.Fprintln(os.Stderr, "\nFlags:")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
 
 	if showVersion {
-		fmt.Println("scopehound " + version)
+		fmt.Println("scan7x " + version)
 		return
 	}
 
+	setupColor(opt.noColor)
 	initHTTP(time.Duration(opt.timeout) * time.Second)
-	fmt.Fprintf(os.Stderr, "\n  scopehound v%s  ·  scope → recon → report\n\n", version)
+	printBanner()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -426,16 +429,26 @@ func inScopeAny(host string, roots []string) bool {
 }
 
 func printFinalSummary(res *ReconResult) {
-	fmt.Println("\n────────────────────────────────────────────")
-	fmt.Printf(" Program : %s  [%s]\n", nonEmpty(res.Program.Name, res.Program.Handle), res.Program.Platform)
-	fmt.Printf(" Scope   : %d in-scope assets\n", len(res.Program.InScope))
-	if res.Mode != "scope" {
-		fmt.Printf(" Subdoms : %d    Live: %d    URLs: %d\n", len(res.Subdomains), len(res.LiveHosts), len(res.AllURLs))
-		fmt.Printf(" JS files: %d    Endpoints: %d\n", len(res.JSURLs), len(res.Endpoints))
+	bar := col(cCyan, "│")
+	rule := "  " + col(cCyan, strings.Repeat("─", 52))
+	num := func(n int) string { return col(cBold+cWhite, fmt.Sprint(n)) }
+	row := func(label, val string) {
+		fmt.Printf("  %s %s %s\n", bar, col(cDim, fmt.Sprintf("%-10s", label)), val)
 	}
-	fmt.Printf(" Output  : %s\n", res.OutDir)
-	fmt.Printf(" Report  : %s\n", filepath.Join(res.OutDir, "report.md"))
-	fmt.Println("────────────────────────────────────────────")
+	fmt.Println()
+	fmt.Println("  " + col(cBold+cGreen, "✓ recon complete"))
+	fmt.Println(rule)
+	row("program", col(cWhite, nonEmpty(res.Program.Name, res.Program.Handle))+"  "+col(cMagenta, "["+res.Program.Platform+"]"))
+	row("scope", num(len(res.Program.InScope))+col(cDim, " in-scope assets"))
+	if res.Mode != "scope" {
+		row("discovery", fmt.Sprintf("%s subdomains  %s live  %s urls",
+			num(len(res.Subdomains)), num(len(res.LiveHosts)), num(len(res.AllURLs))))
+		row("javascript", fmt.Sprintf("%s files  %s endpoints",
+			num(len(res.JSURLs)), num(len(res.Endpoints))))
+	}
+	row("output", col(cCyan, res.OutDir))
+	row("report", col(cCyan, filepath.Join(res.OutDir, "report.md")))
+	fmt.Println(rule)
 }
 
 // --- interactive prompts -------------------------------------------------

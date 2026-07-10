@@ -1,6 +1,6 @@
 # Compiled binaries
-/scopehound
-/scopehound.exe
+/scan7x
+/scan7x.exe
 *.exe
 
 # Recon output directories
