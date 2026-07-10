@@ -19,41 +19,41 @@ with **zero external dependencies** and **no API keys required**.
 
 ---
 
-## المميزات (Features)
+## Features
 
-- 🎯 **اختيار المنصة والتارقت**: HackerOne و Bugcrowd و Intigriti و YesWeHack.
-- 🗂️ **تصنيف تلقائي للـ scope**: نطاقات، wildcards، APIs، تطبيقات جوال، CIDR، سورس، وأخرى — كل نوع بملف مستقل.
-- 🔎 **جمع subdomains بشكل passive** من عدة مصادر: certspotter, crt.sh, hackertarget, rapiddns, AlienVault OTX.
-- 🌐 **فحص المضيفين الأحياء** (probe) مع رمز الحالة والعنوان (title).
-- 🕸️ **جمع الروابط من Wayback** + استخراج ملفات **JavaScript** وتنزيلها.
-- 🧩 **استخراج الـ endpoints** من ملفات الـ JS (مسارات وروابط API).
-- 📄 **تقرير نهائي مرتب** (`report.md` + `summary.json`) ومجلدات منظمة.
-- 🧱 مبني بلغة **Go**، بدون أي مكتبات خارجية، ويشتغل على Windows/Linux/macOS.
+- 🎯 **Pick platform and target**: HackerOne, Bugcrowd, Intigriti, YesWeHack.
+- 🗂️ **Automatic scope categorization**: domains, wildcards, APIs, mobile apps, CIDR, source, and other — each type in its own file.
+- 🔎 **Passive subdomain enumeration** from multiple sources: certspotter, crt.sh, hackertarget, rapiddns, AlienVault OTX.
+- 🌐 **Live-host probing** with status code and page title.
+- 🕸️ **Wayback URL harvesting** + **JavaScript** file extraction and download.
+- 🧩 **Endpoint extraction** from JS files (paths and API routes).
+- 📄 **Clean final report** (`report.md` + `summary.json`) and organized folders.
+- 🧱 Built in **Go**, zero external dependencies, runs on Windows/Linux/macOS.
 
 ---
 
-## المتطلبات والتثبيت (Install)
+## Requirements & install
 
-يحتاج فقط **Go 1.22+**. حمّله من <https://go.dev/dl/>.
+You only need **Go 1.22+**. Download it from <https://go.dev/dl/>.
 
 ```bash
-git clone https://github.com/<your-username>/scan7x.git
+git clone https://github.com/0xsvenx/scan7x.git
 cd scan7x
-go build -o scan7x ./...      # على ويندوز: go build -o scan7x.exe ./...
+go build -o scan7x ./...      # on Windows: go build -o scan7x.exe ./...
 ```
 
-بعد البناء تحصل ملف تنفيذي واحد اسمه `scan7x` (أو `scan7x.exe`).
+After building you'll have a single executable named `scan7x` (or `scan7x.exe`).
 
-> اختياري: لتفعيل `go install github.com/<your-username>/scan7x@latest`
-> عدّل أول سطر في `go.mod` ليطابق رابط مستودعك.
+> You can also run `go install github.com/0xsvenx/scan7x@latest` to install
+> it directly (requires Go 1.22+ and `$(go env GOPATH)/bin` on your `PATH`).
 
 ---
 
-## البدء السريع (Quick start)
+## Quick start
 
-### 1) الوضع التفاعلي (الأسهل)
+### 1) Interactive mode (easiest)
 
-شغّل الأداة بدون أي خيارات وتمشّي معك خطوة بخطوة:
+Run the tool with no options and it walks you through everything step by step:
 
 ```bash
 ./scan7x
@@ -85,25 +85,25 @@ Recon depth:
 Choice [3]: 3
 ```
 
-### 2) بالخيارات (للأتمتة)
+### 2) Flags (for automation)
 
 ```bash
-# ابحث في كل المنصات عن "red bull" وسوِّ recon كامل
+# Search all platforms for "red bull" and run full recon
 ./scan7x -target "red bull"
 
-# HackerOne فقط، اسحب النطاقات والـ wildcards، recon passive
+# HackerOne only, pull domains and wildcards, passive recon
 ./scan7x -platform hackerone -target uber -pull domains,wildcards -recon passive
 
-# فقط اسحب وصنّف الـ scope بدون أي recon
+# Just pull and categorize scope, no recon
 ./scan7x -target shopify -recon scope
 
-# تخطَّ البحث في المنصات وسوِّ recon مباشرة على نطاقات تعرفها
+# Skip the platform lookup and recon directly on domains you already know
 ./scan7x -root example.com,api.example.com -recon full -o ./out/example
 ```
 
 ---
 
-## كيف تشتغل (The flow)
+## How it works (the flow)
 
 ```
 platform + target  ─▶  scope (categorized)  ─▶  enumeration  ─▶  live probe
@@ -112,96 +112,104 @@ platform + target  ─▶  scope (categorized)  ─▶  enumeration  ─▶  liv
    report.md  ◀─  endpoints  ◀─  download JS  ◀─  Wayback URLs + crawl
 ```
 
-1. **Scope**: تُجلب بيانات البرامج من مشروع `bounty-targets-data` (محدّث يوميًا،
-   بدون مفاتيح) وتُصنّف الأصول تلقائيًا. الـ scope يُكاش محليًا 24 ساعة (`-refresh` لإجباره).
-2. **Enumeration**: تُجمع الـ subdomains للـ **wildcard roots** فقط (مثل `*.example.com`)
-   من مصادر passive. المضيفون المحددون بدون wildcard لا يُوسّعون (حفاظًا على النطاق).
-3. **Probe** (في وضع `full`): فحص كل مضيف عبر HTTPS ثم HTTP وتسجيل الأحياء.
-4. **URLs + JS**: جمع الروابط من Wayback + زحف صفحات المضيفين الأحياء لاستخراج
-   `<script src>`، ثم تنزيل ملفات الـ JS داخل النطاق واستخراج الـ endpoints منها.
-5. **Report**: كتابة تقرير وملخّص ومجلدات مرتبة.
+1. **Scope**: Program data is pulled from the `bounty-targets-data` project (updated
+   daily, no keys needed) and assets are auto-categorized. Scope is cached locally
+   for 24 hours (`-refresh` to force an update).
+2. **Enumeration**: Subdomains are gathered only for **wildcard roots** (e.g.
+   `*.example.com`) from passive sources. Explicit non-wildcard hosts are never
+   expanded, to stay within scope.
+3. **Probe** (in `full` mode): each host is checked over HTTPS then HTTP and live
+   ones are recorded.
+4. **URLs + JS**: URLs are collected from Wayback and live host pages are crawled
+   for `<script src>` tags, then in-scope JS files are downloaded and endpoints
+   are extracted from them.
+5. **Report**: a report, summary, and organized folders are written to disk.
 
 ---
 
-## الخيارات (Flags)
+## Flags
 
-| الخيار | الافتراضي | الوصف |
+| Flag | Default | Description |
 |---|---|---|
 | `-platform` | `all` | `hackerone` \| `bugcrowd` \| `intigriti` \| `yeswehack` \| `all` |
-| `-target` | — | اسم/هاندل البرنامج للبحث (مثل `"red bull"`) |
-| `-pull` | `all` | فئات الـ scope: `domains,wildcards,apis,mobile,cidr,source,other,all` |
-| `-pick` | `0` | عند تعدّد النتائج، اختر الرقم N |
+| `-target` | — | Program name/handle to search for (e.g. `"red bull"`) |
+| `-pull` | `all` | Scope categories: `domains,wildcards,apis,mobile,cidr,source,other,all` |
+| `-pick` | `0` | When multiple programs match, pick result N |
 | `-recon` | `full` | `scope` \| `passive` \| `full` |
-| `-o` | `./output/<platform>_<handle>` | مجلد الإخراج |
-| `-root` | — | تخطَّ الـ scope وسوِّ recon مباشرة على نطاقات (قائمة مفصولة بفواصل) |
-| `-sources` | `certspotter,crtsh,hackertarget,rapiddns,otx` | مصادر الـ subdomains |
-| `-threads` | `25` | مستوى التوازي للفحص/الزحف/التنزيل |
-| `-timeout` | `15` | مهلة كل طلب بالثواني عند لمس الأهداف |
-| `-wayback-limit` | `20000` | أقصى عدد روابط لكل هدف من Wayback (0 = بلا حد) |
-| `-refresh` | `false` | إجبار تحديث كاش بيانات الـ scope |
-| `-y` | `false` | وضع غير تفاعلي (لا أسئلة) |
-| `-version` | — | اطبع الإصدار واخرج |
+| `-o` | `./output/<platform>_<handle>` | Output directory |
+| `-root` | — | Skip scope lookup and recon these domains directly (comma-separated list) |
+| `-sources` | `certspotter,crtsh,hackertarget,rapiddns,otx` | Subdomain sources |
+| `-threads` | `25` | Concurrency for probing/crawling/downloading |
+| `-timeout` | `15` | Per-request timeout in seconds when touching targets |
+| `-wayback-limit` | `20000` | Max URLs per target from Wayback (0 = unlimited) |
+| `-refresh` | `false` | Force a refresh of the cached scope data |
+| `-y` | `false` | Non-interactive mode (no prompts) |
+| `-version` | — | Print the version and exit |
 
 ---
 
-## هيكل المخرجات (Output layout)
+## Output layout
 
 ```
 output/<platform>_<handle>/
-├─ report.md                 ← التقرير النهائي المقروء
-├─ summary.json              ← ملخّص بصيغة JSON (أرقام + مسارات)
+├─ report.md                 ← the final human-readable report
+├─ summary.json              ← JSON summary (counts + paths)
 ├─ scope/
 │   ├─ domains.txt
 │   ├─ wildcards.txt
 │   ├─ apis.txt
 │   ├─ mobile.txt / cidr.txt / source.txt / other.txt
-│   ├─ roots.txt             ← جذور الـ wildcards المستخدمة للـ enumeration
-│   └─ raw_program.json      ← الـ scope الكامل المطبّع
-├─ subdomains/all.txt        ← كل الـ subdomains المكتشفة
+│   ├─ roots.txt             ← wildcard roots used for enumeration
+│   └─ raw_program.json      ← the full normalized scope
+├─ subdomains/all.txt        ← all discovered subdomains
 ├─ live/
 │   ├─ live_hosts.txt        ← status + url + title
 │   └─ live_urls.txt
 ├─ urls/
-│   ├─ all_urls.txt          ← روابط Wayback + الزحف
+│   ├─ all_urls.txt          ← Wayback + crawl URLs
 │   └─ js_urls.txt
 └─ js/
-    ├─ <host>_<file>.js      ← ملفات JS المنزّلة (بلا تكرار)
-    └─ endpoints.txt         ← الـ endpoints المستخرجة
+    ├─ <host>_<file>.js      ← downloaded JS files (deduplicated)
+    └─ endpoints.txt         ← extracted endpoints
 ```
 
 ---
 
-## مصادر البيانات (Data sources)
+## Data sources
 
-كلها عامة ولا تحتاج مفاتيح:
+All public, no keys required:
 
-- **Scope**: [`arkadiyt/bounty-targets-data`](https://github.com/arkadiyt/bounty-targets-data) (يجمع نطاقات HackerOne/Bugcrowd/Intigriti/YesWeHack العامة يوميًا).
+- **Scope**: [`arkadiyt/bounty-targets-data`](https://github.com/arkadiyt/bounty-targets-data) (aggregates public HackerOne/Bugcrowd/Intigriti/YesWeHack scope daily).
 - **Subdomains**: certspotter, crt.sh, hackertarget, rapiddns, AlienVault OTX.
-- **URLs/JS**: Wayback Machine (web.archive.org) + زحف مباشر خفيف.
+- **URLs/JS**: Wayback Machine (web.archive.org) + light direct crawling.
 
-المصادر ذات الحدود (rate limits) تُعالَج بلطف: إذا تعطّل مصدر أو تجاوز الحد،
-تُكمل الأداة من البقية بدون توقّف.
-
----
-
-## استخدام مسؤول (Responsible use) ⚠️
-
-هذه أداة **استطلاع (recon)** للاستخدام في برامج مكافآت الثغرات المصرّح بها.
-
-- تعامل فقط مع الأصول **الموجودة صراحةً ضمن نطاق** البرنامج، والتزم بسياسته وحدوده.
-- الاستطلاع **ليس تصريحًا بالاستغلال**.
-- معظم الخطوات passive (سجلّات الشهادات/الأرشيف)، لكن الفحص وتنزيل الـ JS يرسلان
-  طلبات HTTP خفيفة للأهداف — استخدمها فقط حيث لديك إذن.
-
-المسؤولية القانونية على المستخدم.
+Rate-limited sources are handled gracefully: if a source is down or over its
+limit, the tool continues with the rest without stopping.
 
 ---
 
-## كيف اختُبرت (Tested)
+## Responsible use ⚠️
 
-- `go vet ./...` و `gofmt` نظيفة، و `go test ./...` (اختبارات وحدة للتحليل والتصنيف والتنقية) تنجح.
-- تشغيل كامل حقيقي على `owasp.org`: 56 subdomain، 55 live host، 156 ملف JS،
-  و572 endpoint مستخرجة — مع تعامل سليم عند تعطّل بعض المصادر.
+This is a **reconnaissance** tool for use on authorized bug-bounty programs.
+
+- Only interact with assets that are **explicitly in scope** for the program,
+  and follow its policy and rate limits.
+- Reconnaissance is **not authorization to exploit**.
+- Most steps are passive (certificate/archive records), but probing and JS
+  downloading send light HTTP requests to targets — only use this where you
+  have permission.
+
+Legal responsibility rests with the user.
+
+---
+
+## Tested
+
+- `go vet ./...` and `gofmt` are clean, and `go test ./...` (unit tests for
+  parsing, categorization, and denoising) passes.
+- A real end-to-end run against `owasp.org`: 56 subdomains, 55 live hosts,
+  156 JS files, and 572 extracted endpoints — with graceful handling when
+  some sources were down.
 
 ---
 
