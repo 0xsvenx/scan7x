@@ -1,0 +1,20 @@
+# Compiled binaries
+/scopehound
+/scopehound.exe
+*.exe
+
+# Recon output directories
+/output/
+/testout/
+
+# Go workspace
+/vendor/
+go.work
+go.work.sum
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
