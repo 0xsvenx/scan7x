@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -122,6 +124,55 @@ func TestSquashAndSlug(t *testing.T) {
 	}
 	if slug("Red Bull GmbH") != "red-bull-gmbh" {
 		t.Errorf("slug mismatch: %q", slug("Red Bull GmbH"))
+	}
+}
+
+func TestIsQuit(t *testing.T) {
+	for _, s := range []string{"exit", "quit", "q", "EXIT", "  Quit ", "Q"} {
+		if !isQuit(s) {
+			t.Errorf("isQuit(%q) = false, want true", s)
+		}
+	}
+	for _, s := range []string{"uber", "", "exitx", "quitter", "queue"} {
+		if isQuit(s) {
+			t.Errorf("isQuit(%q) = true, want false", s)
+		}
+	}
+}
+
+func TestPromptLine(t *testing.T) {
+	r := bufio.NewReader(strings.NewReader("uber\n"))
+	if got := promptLine(r, "", "def"); got != "uber" {
+		t.Errorf("promptLine typed = %q, want uber", got)
+	}
+	r = bufio.NewReader(strings.NewReader("\n"))
+	if got := promptLine(r, "", "all"); got != "all" {
+		t.Errorf("promptLine empty = %q, want default all", got)
+	}
+	r = bufio.NewReader(strings.NewReader("  spaced  \n"))
+	if got := promptLine(r, "", "def"); got != "spaced" {
+		t.Errorf("promptLine trim = %q, want spaced", got)
+	}
+}
+
+func TestPromptYesNo(t *testing.T) {
+	cases := []struct {
+		in   string
+		def  bool
+		want bool
+	}{
+		{"y\n", false, true},
+		{"yes\n", false, true},
+		{"n\n", true, false},
+		{"no\n", true, false},
+		{"\n", true, true},
+		{"\n", false, false},
+	}
+	for _, c := range cases {
+		r := bufio.NewReader(strings.NewReader(c.in))
+		if got := promptYesNo(r, "", c.def); got != c.want {
+			t.Errorf("promptYesNo(%q, def=%v) = %v, want %v", c.in, c.def, got, c.want)
+		}
 	}
 }
 

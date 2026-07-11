@@ -97,10 +97,13 @@ func stdinIsTerminal() bool {
 }
 
 func runProgramMode(ctx context.Context, opt options) error {
-	interactive := stdinIsTerminal() && opt.target == "" && !opt.yes
+	// Interactive when stdin is a terminal (or SCAN7X_INTERACTIVE=1 to drive the
+	// wizard from piped input) and no target was given on the command line.
+	interactive := (stdinIsTerminal() || os.Getenv("SCAN7X_INTERACTIVE") == "1") && opt.target == "" && !opt.yes
 	reader := bufio.NewReader(os.Stdin)
 
 	if interactive {
+		fmt.Fprintln(os.Stderr, col(cDim, "  tip: type 'exit' at any prompt to quit"))
 		opt.platform = promptPlatform(reader)
 	}
 	platforms, err := resolvePlatforms(opt.platform)
@@ -108,44 +111,100 @@ func runProgramMode(ctx context.Context, opt options) error {
 		return err
 	}
 
-	if interactive {
-		opt.target = promptLine(reader, "Enter target program name (e.g. red bull): ", "")
-	}
-	if strings.TrimSpace(opt.target) == "" {
-		return fmt.Errorf("no target given; use -target \"name\" or run interactively")
-	}
+	// Each iteration handles one program end-to-end. In interactive mode we
+	// loop so a wrong entry re-asks instead of dropping out of the tool, and
+	// the user can scan another program or type 'exit' when done.
+	for {
+		var prog Program
+		if interactive {
+			prog = interactiveSelectProgram(ctx, opt, platforms, reader)
+		} else {
+			if strings.TrimSpace(opt.target) == "" {
+				return fmt.Errorf("no target given; use -target \"name\" or run interactively")
+			}
+			logf("[*] Searching %s for %q ...", strings.Join(platforms, ","), opt.target)
+			progs, serr := searchPrograms(ctx, platforms, opt.target, opt.refresh)
+			if serr != nil {
+				return serr
+			}
+			if len(progs) == 0 {
+				return fmt.Errorf("no programs matched %q on %s", opt.target, strings.Join(platforms, ","))
+			}
+			rankPrograms(progs, opt.target)
+			prog, err = chooseProgram(progs, opt, false, reader)
+			if err != nil {
+				return err
+			}
+		}
+		logf("[+] Selected: %s  [%s]  %s", nonEmpty(prog.Name, prog.Handle), prog.Platform, prog.URL)
 
-	logf("[*] Searching %s for %q ...", strings.Join(platforms, ","), opt.target)
-	progs, err := searchPrograms(ctx, platforms, opt.target, opt.refresh)
-	if err != nil {
-		return err
-	}
-	if len(progs) == 0 {
-		return fmt.Errorf("no programs matched %q on %s", opt.target, strings.Join(platforms, ","))
-	}
-	rankPrograms(progs, opt.target)
+		catIDs := categoryIdentifiers(prog)
+		var selected map[Category]bool
+		if interactive {
+			for {
+				opt.pull = promptCategories(reader, catIDs)
+				selected, err = resolveCategories(opt.pull)
+				if err == nil {
+					break
+				}
+				fmt.Fprintln(os.Stderr, col(cYellow, "  "+err.Error()+" — try again (or 'exit')"))
+			}
+			opt.recon = promptRecon(reader)
+		} else {
+			if selected, err = resolveCategories(opt.pull); err != nil {
+				return err
+			}
+		}
+		if err := validateRecon(opt.recon); err != nil {
+			return err
+		}
 
-	prog, err := chooseProgram(progs, opt, interactive, reader)
-	if err != nil {
-		return err
-	}
-	logf("[+] Selected: %s  [%s]  %s", nonEmpty(prog.Name, prog.Handle), prog.Platform, prog.URL)
+		if perr := runPipeline(ctx, opt, prog, selected); perr != nil {
+			if !interactive {
+				return perr
+			}
+			fmt.Fprintln(os.Stderr, col(cRed, "  run failed: "+perr.Error()+" — you can try another program"))
+		}
 
-	catIDs := categoryIdentifiers(prog)
-	if interactive {
-		opt.pull = promptCategories(reader, catIDs)
+		if !interactive {
+			return nil
+		}
+		if !promptYesNo(reader, "\nScan another program? [Y/n]: ", true) {
+			quitNow()
+		}
+		opt.target, opt.pull = "", "all"
 	}
-	selected, err := resolveCategories(opt.pull)
-	if err != nil {
-		return err
+}
+
+// interactiveSelectProgram prompts for a program name and keeps re-asking when
+// the search errors or finds nothing, so a typo never kicks the user out.
+func interactiveSelectProgram(ctx context.Context, opt options, platforms []string, reader *bufio.Reader) Program {
+	for {
+		target := promptLine(reader, "Enter target program name (e.g. red bull), or 'exit': ", "")
+		if target == "" {
+			fmt.Fprintln(os.Stderr, col(cYellow, "  type a program name, or 'exit' to quit"))
+			continue
+		}
+		logf("[*] Searching %s for %q ...", strings.Join(platforms, ","), target)
+		progs, err := searchPrograms(ctx, platforms, target, opt.refresh)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, col(cYellow, "  search failed: "+err.Error()+" — try again"))
+			continue
+		}
+		if len(progs) == 0 {
+			fmt.Fprintln(os.Stderr, col(cYellow, fmt.Sprintf("  no program matched %q — try another name", target)))
+			continue
+		}
+		rankPrograms(progs, target)
+		optCopy := opt
+		optCopy.target = target
+		prog, err := chooseProgram(progs, optCopy, true, reader)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, col(cYellow, "  "+err.Error()+" — try again"))
+			continue
+		}
+		return prog
 	}
-	if interactive {
-		opt.recon = promptRecon(reader)
-	}
-	if err := validateRecon(opt.recon); err != nil {
-		return err
-	}
-	return runPipeline(ctx, opt, prog, selected)
 }
 
 func runRootMode(ctx context.Context, opt options) error {
@@ -453,13 +512,48 @@ func printFinalSummary(res *ReconResult) {
 
 // --- interactive prompts -------------------------------------------------
 
+func isQuit(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "exit", "quit", "q":
+		return true
+	}
+	return false
+}
+
+// quitNow prints a friendly goodbye and exits cleanly (status 0).
+func quitNow() {
+	fmt.Fprintln(os.Stderr, col(cGray, "\nbye — happy hunting."))
+	os.Exit(0)
+}
+
 func promptLine(r *bufio.Reader, prompt, def string) string {
 	fmt.Fprint(os.Stderr, prompt)
-	line, _ := r.ReadString('\n')
-	if line = strings.TrimSpace(line); line != "" {
+	line, err := r.ReadString('\n')
+	if err != nil && strings.TrimSpace(line) == "" {
+		quitNow() // EOF / Ctrl+D / closed stdin
+	}
+	line = strings.TrimSpace(line)
+	if isQuit(line) {
+		quitNow()
+	}
+	if line != "" {
 		return line
 	}
 	return def
+}
+
+// promptYesNo asks a yes/no question; def is the answer used for empty input.
+func promptYesNo(r *bufio.Reader, prompt string, def bool) bool {
+	d := "n"
+	if def {
+		d = "y"
+	}
+	switch strings.ToLower(promptLine(r, prompt, d)) {
+	case "y", "yes":
+		return true
+	default:
+		return false
+	}
 }
 
 func promptPlatform(r *bufio.Reader) string {
