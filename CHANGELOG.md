@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased (v2.0 — in progress)
+
+### Added
+- **Projects backed by SQLite** (`~/.scan7x/scan7x.db`, a real database you can
+  query with `sqlite3`/DBeaver):
+  - `scan7x project create|update|list|show|report|delete`.
+  - Each scan's findings (subdomains, resolved IPs, live hosts, endpoints,
+    secrets, JS) are persisted and accumulated per project.
+- **Diff detection** — `project update` reports what's **new** since the last
+  scan: new subdomains, new live hosts, and new in-scope assets the program
+  added (e.g. "Bugcrowd added a domain").
+- `SCAN7X_HOME` / `SCAN7X_DB` to relocate the database and project artifacts.
+
+### Changed
+- Minimum Go version is now **1.25** (required by the pure-Go SQLite driver);
+  prebuilt binaries are unaffected.
+
 ## v1.1.0
 
 ### Added
