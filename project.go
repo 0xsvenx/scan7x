@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -92,8 +93,21 @@ func projectFlags(name string) (*flag.FlagSet, *options, *string, *bool) {
 	fs.IntVar(&opt.threads, "threads", 25, "concurrency")
 	fs.IntVar(&opt.timeout, "timeout", 15, "per-request timeout (s)")
 	fs.IntVar(&opt.wbLimit, "wayback-limit", 20000, "max Wayback URLs per target")
+	fs.StringVar(&opt.root, "root", "", "recon these root domains directly instead of a bounty program")
 	refresh := fs.Bool("refresh", false, "force refresh of cached scope data")
 	return fs, opt, target, refresh
+}
+
+// programFromRoots builds a synthetic program from raw wildcard roots so a
+// project can track a domain that isn't (or isn't yet) a bounty program.
+func programFromRoots(name, rootCSV string) Program {
+	var assets []ScopeAsset
+	for _, r := range splitCSV(rootCSV) {
+		if h, _, ok := normalizeHost(r); ok {
+			assets = append(assets, ScopeAsset{Identifier: "*." + h, RawType: "wildcard", Category: CatWildcard, Host: h, Wildcard: true})
+		}
+	}
+	return Program{Platform: "manual", Name: name, Handle: slug(name), InScope: assets}
 }
 
 func projectCreate(ctx context.Context, store *Store, args []string) error {
@@ -109,34 +123,52 @@ func projectCreate(ctx context.Context, store *Store, args []string) error {
 	if _, err := store.GetProject(name); err == nil {
 		return fmt.Errorf("project %q already exists — use 'scan7x project update %s'", name, name)
 	}
-	if strings.TrimSpace(*target) == "" {
-		*target = name
-	}
 	initHTTP(time.Duration(opt.timeout) * time.Second)
 
-	prog, err := findProgram(ctx, *opt, *target, *refresh)
-	if err != nil {
-		return err
+	var prog Program
+	if strings.TrimSpace(opt.root) != "" {
+		prog = programFromRoots(name, opt.root)
+		if len(prog.InScope) == 0 {
+			return errors.New("no valid root domains in -root")
+		}
+	} else {
+		if strings.TrimSpace(*target) == "" {
+			*target = name
+		}
+		if prog, err = findProgram(ctx, *opt, *target, *refresh); err != nil {
+			return err
+		}
 	}
 	if err := validateRecon(opt.recon); err != nil {
 		return err
 	}
 	logf("[+] Program: %s [%s] %s", nonEmpty(prog.Name, prog.Handle), prog.Platform, prog.URL)
 
-	id, err := store.CreateProject(name, prog, opt.pull, opt.recon)
-	if err != nil {
+	if _, err := store.CreateProject(name, prog, opt.pull, opt.recon); err != nil {
 		return fmt.Errorf("create project: %w", err)
 	}
 	selected, err := resolveCategories(opt.pull)
 	if err != nil {
 		return err
 	}
-	res := computeRecon(ctx, *opt, prog, selected, projectsDir(name))
-	diff, err := store.SaveResult(id, res)
+	p, err := store.GetProject(name)
 	if err != nil {
-		return fmt.Errorf("save results: %w", err)
+		return err
 	}
-	_ = writeOutputs(res)
+	diff, res, err := runProjectScan(ctx, store, p, prog, *opt, selected)
+	if res != nil {
+		if res.Finished.IsZero() {
+			res.Finished = time.Now()
+		}
+		_ = writeOutputs(res)
+	}
+	if err != nil {
+		if ctx.Err() != nil {
+			fmt.Fprintln(os.Stderr, col(cYellow, "  interrupted — progress saved; resume with: scan7x project update "+name))
+			return nil
+		}
+		return err
+	}
 	fmt.Printf("\n%s created project %s\n", col(cBold+cGreen, "✓"), col(cBold+cWhite, name))
 	printProjectDiff(diff, res, true)
 	return nil
@@ -157,11 +189,15 @@ func projectUpdate(ctx context.Context, store *Store, args []string) error {
 		return fmt.Errorf("project %q not found (create it first)", name)
 	}
 	initHTTP(time.Duration(opt.timeout) * time.Second)
-	// Prefer freshly-fetched scope so newly-added program assets are detected;
-	// fall back to the stored scope if the lookup fails.
-	prog, ferr := findProgramByHandle(ctx, p.Platform, p.Handle, *refresh)
-	if ferr != nil {
-		logf("[warn] scope refresh failed (%v); using stored scope", ferr)
+	// Manual (root-based) projects use the stored scope. For real programs,
+	// re-fetch so newly-added assets are detected, falling back to stored scope.
+	var prog Program
+	if p.Platform == "manual" {
+		if prog, err = store.loadProgram(p); err != nil {
+			return err
+		}
+	} else if prog, err = findProgramByHandle(ctx, p.Platform, p.Handle, *refresh); err != nil {
+		logf("[warn] scope refresh failed (%v); using stored scope", err)
 		if prog, err = store.loadProgram(p); err != nil {
 			return err
 		}
@@ -172,8 +208,7 @@ func projectUpdate(ctx context.Context, store *Store, args []string) error {
 	}
 
 	// A project keeps its configured recon depth and category selection.
-	opt.recon = nonEmpty(p.Recon, "full")
-	if err := validateRecon(opt.recon); err != nil {
+	if err := validateRecon(nonEmpty(p.Recon, "full")); err != nil {
 		return err
 	}
 	selected, err := resolveCategories(nonEmpty(p.Pull, "all"))
@@ -182,13 +217,21 @@ func projectUpdate(ctx context.Context, store *Store, args []string) error {
 	}
 
 	logf("[*] Updating project %s (%s) ...", name, prog.Handle)
-	res := computeRecon(ctx, *opt, prog, selected, projectsDir(name))
-	diff, err := store.SaveResult(p.ID, res)
+	diff, res, err := runProjectScan(ctx, store, p, prog, *opt, selected)
+	if res != nil {
+		if res.Finished.IsZero() {
+			res.Finished = time.Now()
+		}
+		_ = writeOutputs(res)
+	}
 	if err != nil {
-		return fmt.Errorf("save results: %w", err)
+		if ctx.Err() != nil {
+			fmt.Fprintln(os.Stderr, col(cYellow, "  interrupted — progress saved; resume with: scan7x project update "+name))
+			return nil
+		}
+		return err
 	}
 	diff.NewAssets = newAssets
-	_ = writeOutputs(res)
 	printProjectDiff(diff, res, false)
 	return nil
 }
@@ -317,6 +360,167 @@ func printProjectDiff(diff *Diff, res *ReconResult, first bool) {
 			diff.NewEndpoints, col(cBold+cYellow, fmt.Sprint(diff.NewSecrets)))
 	}
 	fmt.Println()
+}
+
+// scanStages are the resumable checkpoints of a full project scan.
+var scanStages = []string{"enum", "probe", "js"}
+
+func stageIndex(name string) int {
+	for i, s := range scanStages {
+		if s == name {
+			return i
+		}
+	}
+	return -1
+}
+
+// runProjectScan runs (or resumes) a staged, checkpointed scan and persists
+// each stage to the database. If a previous run was interrupted, it continues
+// from the next stage instead of redoing completed work.
+func runProjectScan(ctx context.Context, store *Store, p *ProjectRow, prog Program, opt options, selected map[Category]bool) (*Diff, *ReconResult, error) {
+	mode := nonEmpty(p.Recon, "full")
+	roots := enumRoots(prog.InScope, selected)
+	known := knownHosts(prog.InScope, selected)
+	res := &ReconResult{
+		Program: prog, OutDir: projectsDir(p.Name), Mode: mode,
+		CatIDs: selectedCategoryIDs(prog, selected), Started: time.Now(),
+		EnumPerSrc: map[string]int{}, Roots: roots, KnownHosts: known,
+	}
+	diff := &Diff{}
+
+	// If the last run is still 'running', it was interrupted — resume it.
+	resumeFrom, runID := 0, int64(0)
+	if id, status, stage, ok := store.LastRun(p.ID); ok && status == "running" {
+		runID = id
+		if resumeFrom = stageIndex(stage) + 1; resumeFrom < 0 {
+			resumeFrom = 0
+		}
+		if resumeFrom < len(scanStages) {
+			logf("[*] %s", col(cBold+cYellow, fmt.Sprintf("resuming interrupted run — continuing from '%s'", scanStages[resumeFrom])))
+		}
+	}
+	if runID == 0 {
+		var err error
+		if runID, err = store.StartRun(p.ID, mode); err != nil {
+			return nil, nil, err
+		}
+	}
+	cached := func(stage string) bool { return resumeFrom > stageIndex(stage) }
+	finish := func() (*Diff, *ReconResult, error) {
+		res.Finished = time.Now()
+		_ = store.FinishRun(runID, res, len(diff.NewSubdomains))
+		// reflect the full accumulated state so the report is complete.
+		res.Endpoints = store.loadEndpoints(p.ID)
+		res.Secrets = store.loadSecrets(p.ID)
+		res.JSURLs = store.loadJSURLs(p.ID)
+		return diff, res, nil
+	}
+
+	if mode == "scope" {
+		return finish()
+	}
+
+	// STAGE 1 — enum: subdomains from sources + Wayback host extraction.
+	if cached("enum") {
+		res.Subdomains = store.loadSubdomains(p.ID)
+		logf("[=] enum cached: %d subdomains", len(res.Subdomains))
+	} else {
+		logf("[*] enum: %d wildcard roots, %d explicit hosts", len(roots), len(known))
+		var subs []string
+		if len(roots) > 0 {
+			merged, per, _ := enumerateAll(ctx, roots, splitCSV(opt.sources))
+			subs, res.EnumPerSrc = merged, per
+		}
+		hostSet := append([]string{}, subs...)
+		hostSet = append(hostSet, known...)
+		res.AllURLs = collectURLs(ctx, roots, known, opt.wbLimit)
+		for _, u := range res.AllURLs {
+			if h := hostFromURL(u); h != "" && (inScopeAny(h, roots) || contains(known, h)) {
+				hostSet = append(hostSet, h)
+			}
+		}
+		res.Subdomains = dedupSorted(hostSet)
+		newSubs, err := store.SaveSubdomains(p.ID, res.Subdomains)
+		if err != nil {
+			return nil, nil, err
+		}
+		diff.NewSubdomains = newSubs
+		if ctx.Err() != nil {
+			return diff, res, ctx.Err()
+		}
+		_ = store.CheckpointRun(runID, "enum")
+	}
+
+	if mode == "passive" {
+		res.JSURLs = filterJSURLs(res.AllURLs)
+		_ = store.SaveJSURLs(p.ID, res.JSURLs)
+		return finish()
+	}
+
+	// STAGE 2 — probe: DNS resolution + live-host probing.
+	if cached("probe") {
+		res.Resolved = store.loadResolved(p.ID)
+		res.LiveHosts = store.loadLiveHosts(p.ID)
+		logf("[=] probe cached: %d live hosts", len(res.LiveHosts))
+	} else {
+		logf("[*] resolve %d subdomains ...", len(res.Subdomains))
+		res.Resolved = resolveHosts(ctx, res.Subdomains, opt.threads*2)
+		probeTargets := res.Subdomains
+		if len(res.Resolved) > 0 {
+			probeTargets = nil
+			for _, r := range res.Resolved {
+				probeTargets = append(probeTargets, r.Host)
+			}
+		}
+		logf("[*] probe %d hosts ...", len(probeTargets))
+		res.LiveHosts = probeHosts(ctx, probeTargets, opt.threads)
+		_ = store.SaveResolved(p.ID, res.Resolved)
+		newLive, err := store.SaveLiveHosts(p.ID, res.LiveHosts)
+		if err != nil {
+			return nil, nil, err
+		}
+		diff.NewLive = newLive
+		if ctx.Err() != nil {
+			return diff, res, ctx.Err()
+		}
+		_ = store.CheckpointRun(runID, "probe")
+	}
+
+	// STAGE 3 — js: discover JS URLs, download the new ones, extract.
+	if len(res.AllURLs) == 0 && len(roots) > 0 {
+		res.AllURLs = collectURLs(ctx, roots, known, opt.wbLimit)
+	}
+	var liveURLs []string
+	for _, lh := range res.LiveHosts {
+		liveURLs = append(liveURLs, lh.URL)
+	}
+	crawled := crawlScripts(ctx, liveURLs, opt.threads)
+	candidates := dedupSorted(append(filterJSURLs(res.AllURLs), crawled...))
+	var jsAll []string
+	for _, u := range candidates {
+		if h := hostFromURL(u); h != "" && (inScopeAny(h, roots) || contains(known, h)) {
+			jsAll = append(jsAll, u)
+		}
+	}
+	jsAll = dedupSorted(jsAll)
+	already := store.jsURLSet(p.ID)
+	var todo []string
+	for _, u := range jsAll {
+		if !already[u] {
+			todo = append(todo, u)
+		}
+	}
+	logf("[*] js: %d in-scope files (%d new to download) ...", len(jsAll), len(todo))
+	res.JSDownloaded, res.Endpoints, res.Secrets = downloadAndExtract(ctx, todo, filepath.Join(res.OutDir, "js"), opt.threads)
+	newEps, _ := store.SaveEndpoints(p.ID, res.Endpoints)
+	newSecs, _ := store.SaveSecrets(p.ID, res.Secrets)
+	_ = store.SaveJSURLs(p.ID, jsAll)
+	diff.NewEndpoints, diff.NewSecrets = newEps, newSecs
+	if ctx.Err() != nil {
+		return diff, res, ctx.Err()
+	}
+	_ = store.CheckpointRun(runID, "js")
+	return finish()
 }
 
 // --- program lookup helpers ---------------------------------------------

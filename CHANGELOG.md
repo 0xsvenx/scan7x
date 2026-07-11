@@ -11,6 +11,12 @@
 - **Diff detection** — `project update` reports what's **new** since the last
   scan: new subdomains, new live hosts, and new in-scope assets the program
   added (e.g. "Bugcrowd added a domain").
+- **Smart Resume** — scans checkpoint each stage (`enum → probe → js`) to the
+  database. If a scan is interrupted, `project update` continues from the last
+  completed stage instead of redoing everything (already-downloaded JS is
+  skipped too).
+- `project create <name> -root <domain>` to track a raw domain that isn't a
+  bounty program.
 - `SCAN7X_HOME` / `SCAN7X_DB` to relocate the database and project artifacts.
 
 ### Changed

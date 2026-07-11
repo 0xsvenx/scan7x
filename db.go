@@ -73,11 +73,19 @@ CREATE TABLE IF NOT EXISTS js_files (
 );
 CREATE TABLE IF NOT EXISTS runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER, mode TEXT,
+  status TEXT, stage TEXT,
   started_at TEXT, finished_at TEXT,
   subdomains INTEGER, resolved INTEGER, live INTEGER, urls INTEGER,
   js INTEGER, endpoints INTEGER, secrets INTEGER, new_subdomains INTEGER
 );
 `
+
+// migrations are best-effort ALTERs for databases created by earlier builds;
+// they error harmlessly ("duplicate column") when already applied.
+var migrations = []string{
+	`ALTER TABLE runs ADD COLUMN status TEXT`,
+	`ALTER TABLE runs ADD COLUMN stage TEXT`,
+}
 
 // OpenStore opens (creating if needed) the SQLite database and applies the schema.
 func OpenStore(path string) (*Store, error) {
@@ -95,6 +103,9 @@ func OpenStore(path string) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("init schema: %w", err)
+	}
+	for _, m := range migrations {
+		_, _ = db.Exec(m)
 	}
 	return &Store{db: db}, nil
 }
@@ -230,68 +241,281 @@ func (s *Store) syncAssets(projectID int64, prog Program) ([]string, error) {
 	return dedupSorted(added), nil
 }
 
-// SaveResult upserts a run's findings and returns the diff vs. what was stored.
-func (s *Store) SaveResult(projectID int64, res *ReconResult) (*Diff, error) {
+// --- granular persistence (each returns what was new) --------------------
+
+func (s *Store) SaveSubdomains(projectID int64, subs []string) ([]string, error) {
 	now := nowStr()
-	diff := &Diff{}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-
-	for _, h := range res.Subdomains {
+	var fresh []string
+	for _, h := range subs {
 		r, err := tx.Exec(`INSERT OR IGNORE INTO subdomains(project_id,host,first_seen,last_seen) VALUES(?,?,?,?)`, projectID, h, now, now)
 		if err != nil {
 			return nil, err
 		}
 		if n, _ := r.RowsAffected(); n > 0 {
-			diff.NewSubdomains = append(diff.NewSubdomains, h)
+			fresh = append(fresh, h)
 		} else {
 			_, _ = tx.Exec(`UPDATE subdomains SET last_seen=? WHERE project_id=? AND host=?`, now, projectID, h)
 		}
 	}
-	for _, rh := range res.Resolved {
+	return fresh, tx.Commit()
+}
+
+func (s *Store) SaveResolved(projectID int64, resolved []ResolvedHost) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, rh := range resolved {
 		_, _ = tx.Exec(`UPDATE subdomains SET resolved=1, ips=? WHERE project_id=? AND host=?`, strings.Join(rh.IPs, ","), projectID, rh.Host)
 	}
-	for _, lh := range res.LiveHosts {
+	return tx.Commit()
+}
+
+func (s *Store) SaveLiveHosts(projectID int64, live []LiveHost) ([]string, error) {
+	now := nowStr()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var fresh []string
+	for _, lh := range live {
 		r, err := tx.Exec(`INSERT OR IGNORE INTO live_hosts(project_id,url,status,server,title,first_seen,last_seen) VALUES(?,?,?,?,?,?,?)`,
 			projectID, lh.URL, lh.Status, lh.Server, lh.Title, now, now)
 		if err != nil {
 			return nil, err
 		}
 		if n, _ := r.RowsAffected(); n > 0 {
-			diff.NewLive = append(diff.NewLive, lh.URL)
+			fresh = append(fresh, lh.URL)
 		} else {
 			_, _ = tx.Exec(`UPDATE live_hosts SET status=?,server=?,title=?,last_seen=? WHERE project_id=? AND url=?`, lh.Status, lh.Server, lh.Title, now, projectID, lh.URL)
 		}
 	}
-	for _, e := range res.Endpoints {
-		r, _ := tx.Exec(`INSERT OR IGNORE INTO endpoints(project_id,endpoint,first_seen) VALUES(?,?,?)`, projectID, e, now)
-		if n, _ := r.RowsAffected(); n > 0 {
-			diff.NewEndpoints++
+	return fresh, tx.Commit()
+}
+
+func (s *Store) saveCounted(projectID int64, items []string, insert func(*sql.Tx, string) (int64, error)) (int, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	n := 0
+	for _, it := range items {
+		affected, err := insert(tx, it)
+		if err != nil {
+			return 0, err
+		}
+		if affected > 0 {
+			n++
 		}
 	}
-	for _, sec := range res.Secrets {
-		r, _ := tx.Exec(`INSERT OR IGNORE INTO secrets(project_id,type,match,first_seen) VALUES(?,?,?,?)`, projectID, sec.Type, sec.Match, now)
-		if n, _ := r.RowsAffected(); n > 0 {
-			diff.NewSecrets++
+	return n, tx.Commit()
+}
+
+func (s *Store) SaveEndpoints(projectID int64, eps []string) (int, error) {
+	now := nowStr()
+	return s.saveCounted(projectID, eps, func(tx *sql.Tx, e string) (int64, error) {
+		r, err := tx.Exec(`INSERT OR IGNORE INTO endpoints(project_id,endpoint,first_seen) VALUES(?,?,?)`, projectID, e, now)
+		if err != nil {
+			return 0, err
+		}
+		a, _ := r.RowsAffected()
+		return a, nil
+	})
+}
+
+func (s *Store) SaveSecrets(projectID int64, secs []Secret) (int, error) {
+	now := nowStr()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	n := 0
+	for _, sec := range secs {
+		r, err := tx.Exec(`INSERT OR IGNORE INTO secrets(project_id,type,match,first_seen) VALUES(?,?,?,?)`, projectID, sec.Type, sec.Match, now)
+		if err != nil {
+			return 0, err
+		}
+		if a, _ := r.RowsAffected(); a > 0 {
+			n++
 		}
 	}
-	for _, u := range res.JSURLs {
+	return n, tx.Commit()
+}
+
+func (s *Store) SaveJSURLs(projectID int64, urls []string) error {
+	now := nowStr()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, u := range urls {
 		_, _ = tx.Exec(`INSERT OR IGNORE INTO js_files(project_id,url,first_seen) VALUES(?,?,?)`, projectID, u, now)
 	}
-	_, _ = tx.Exec(`INSERT INTO runs(project_id,mode,started_at,finished_at,subdomains,resolved,live,urls,js,endpoints,secrets,new_subdomains)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, projectID, res.Mode,
-		res.Started.UTC().Format(time.RFC3339), res.Finished.UTC().Format(time.RFC3339),
-		len(res.Subdomains), len(res.Resolved), len(res.LiveHosts), len(res.AllURLs),
-		len(res.JSURLs), len(res.Endpoints), len(res.Secrets), len(diff.NewSubdomains))
-	_, _ = tx.Exec(`UPDATE projects SET updated_at=? WHERE id=?`, now, projectID)
+	return tx.Commit()
+}
 
-	if err := tx.Commit(); err != nil {
+// SaveResult persists a full result in one shot and returns the diff.
+func (s *Store) SaveResult(projectID int64, res *ReconResult) (*Diff, error) {
+	diff := &Diff{}
+	var err error
+	if diff.NewSubdomains, err = s.SaveSubdomains(projectID, res.Subdomains); err != nil {
 		return nil, err
 	}
+	if err = s.SaveResolved(projectID, res.Resolved); err != nil {
+		return nil, err
+	}
+	if diff.NewLive, err = s.SaveLiveHosts(projectID, res.LiveHosts); err != nil {
+		return nil, err
+	}
+	if diff.NewEndpoints, err = s.SaveEndpoints(projectID, res.Endpoints); err != nil {
+		return nil, err
+	}
+	if diff.NewSecrets, err = s.SaveSecrets(projectID, res.Secrets); err != nil {
+		return nil, err
+	}
+	if err = s.SaveJSURLs(projectID, res.JSURLs); err != nil {
+		return nil, err
+	}
+	id, _ := s.StartRun(projectID, res.Mode)
+	_ = s.FinishRun(id, res, len(diff.NewSubdomains))
+	_, _ = s.db.Exec(`UPDATE projects SET updated_at=? WHERE id=?`, nowStr(), projectID)
 	return diff, nil
+}
+
+// --- run lifecycle (smart resume) ----------------------------------------
+
+func (s *Store) StartRun(projectID int64, mode string) (int64, error) {
+	r, err := s.db.Exec(`INSERT INTO runs(project_id,mode,status,stage,started_at) VALUES(?,?,?,?,?)`,
+		projectID, mode, "running", "", nowStr())
+	if err != nil {
+		return 0, err
+	}
+	id, _ := r.LastInsertId()
+	return id, nil
+}
+
+func (s *Store) CheckpointRun(runID int64, stage string) error {
+	_, err := s.db.Exec(`UPDATE runs SET stage=? WHERE id=?`, stage, runID)
+	return err
+}
+
+func (s *Store) FinishRun(runID int64, res *ReconResult, newSubs int) error {
+	_, err := s.db.Exec(`UPDATE runs SET status=?, stage=?, finished_at=?,
+		subdomains=?, resolved=?, live=?, urls=?, js=?, endpoints=?, secrets=?, new_subdomains=? WHERE id=?`,
+		"completed", "done", nowStr(),
+		len(res.Subdomains), len(res.Resolved), len(res.LiveHosts), len(res.AllURLs),
+		len(res.JSURLs), len(res.Endpoints), len(res.Secrets), newSubs, runID)
+	return err
+}
+
+// LastRun returns the most recent run's id, status and last-completed stage.
+func (s *Store) LastRun(projectID int64) (id int64, status, stage string, ok bool) {
+	var st, sg sql.NullString
+	err := s.db.QueryRow(`SELECT id,COALESCE(status,''),COALESCE(stage,'') FROM runs WHERE project_id=? ORDER BY id DESC LIMIT 1`, projectID).Scan(&id, &st, &sg)
+	if err != nil {
+		return 0, "", "", false
+	}
+	return id, st.String, sg.String, true
+}
+
+// --- loaders for resume --------------------------------------------------
+
+func (s *Store) loadStrings(query string, projectID int64) []string {
+	rows, err := s.db.Query(query, projectID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var v string
+		if rows.Scan(&v) == nil {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func (s *Store) loadSubdomains(projectID int64) []string {
+	return s.loadStrings(`SELECT host FROM subdomains WHERE project_id=? ORDER BY host`, projectID)
+}
+
+func (s *Store) loadResolved(projectID int64) []ResolvedHost {
+	rows, err := s.db.Query(`SELECT host,COALESCE(ips,'') FROM subdomains WHERE project_id=? AND resolved=1 ORDER BY host`, projectID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []ResolvedHost
+	for rows.Next() {
+		var host, ips string
+		if rows.Scan(&host, &ips) == nil {
+			var list []string
+			if ips != "" {
+				list = strings.Split(ips, ",")
+			}
+			out = append(out, ResolvedHost{Host: host, IPs: list})
+		}
+	}
+	return out
+}
+
+func (s *Store) loadLiveHosts(projectID int64) []LiveHost {
+	rows, err := s.db.Query(`SELECT url,status,COALESCE(server,''),COALESCE(title,'') FROM live_hosts WHERE project_id=? ORDER BY url`, projectID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []LiveHost
+	for rows.Next() {
+		var lh LiveHost
+		if rows.Scan(&lh.URL, &lh.Status, &lh.Server, &lh.Title) == nil {
+			out = append(out, lh)
+		}
+	}
+	return out
+}
+
+func (s *Store) loadJSURLs(projectID int64) []string {
+	return s.loadStrings(`SELECT url FROM js_files WHERE project_id=? ORDER BY url`, projectID)
+}
+
+func (s *Store) loadEndpoints(projectID int64) []string {
+	return s.loadStrings(`SELECT endpoint FROM endpoints WHERE project_id=? ORDER BY endpoint`, projectID)
+}
+
+func (s *Store) loadSecrets(projectID int64) []Secret {
+	rows, err := s.db.Query(`SELECT type,match FROM secrets WHERE project_id=? ORDER BY type`, projectID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []Secret
+	for rows.Next() {
+		var sec Secret
+		if rows.Scan(&sec.Type, &sec.Match) == nil {
+			out = append(out, sec)
+		}
+	}
+	return out
+}
+
+func (s *Store) jsURLSet(projectID int64) map[string]bool {
+	set := map[string]bool{}
+	for _, u := range s.loadJSURLs(projectID) {
+		set[u] = true
+	}
+	return set
 }
 
 // LoadResult reconstructs a ReconResult from stored rows so `project report`

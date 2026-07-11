@@ -179,6 +179,17 @@ Example diff on an update:
     + internal-tools.shopify.com
 ```
 
+**Smart Resume:** scans checkpoint each stage (`enum → probe → js`) to the
+database. If a scan is interrupted (Ctrl+C, crash, dropped connection), just run
+`project update` again — it continues from the last completed stage instead of
+starting over, and skips JavaScript it already downloaded.
+
+You can also track a raw domain that isn't a bounty program:
+
+```bash
+scan7x project create mybox -root example.com -recon full
+```
+
 > The database lives under `~/.scan7x/` (override the base dir with
 > `SCAN7X_HOME`, or the DB path with `SCAN7X_DB`).
 
