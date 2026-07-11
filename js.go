@@ -16,8 +16,8 @@ import (
 var endpointRe = regexp.MustCompile("[\"'\\x60]((?:https?:)?//[^\"'\\x60\\s]{4,}|/[a-zA-Z0-9_][^\"'\\x60\\s]{1,})[\"'\\x60]")
 
 // downloadAndExtract fetches each JS URL, saves unique bodies to jsDir, and
-// returns the saved file paths plus all endpoints discovered inside them.
-func downloadAndExtract(ctx context.Context, jsURLs []string, jsDir string, threads int) (downloaded []string, endpoints []string) {
+// returns the saved file paths, all endpoints, and any secrets found inside.
+func downloadAndExtract(ctx context.Context, jsURLs []string, jsDir string, threads int) (downloaded []string, endpoints []string, secrets []Secret) {
 	if threads < 1 {
 		threads = 1
 	}
@@ -27,6 +27,7 @@ func downloadAndExtract(ctx context.Context, jsURLs []string, jsDir string, thre
 	type result struct {
 		path      string
 		endpoints []string
+		secrets   []Secret
 	}
 	out := make(chan result)
 	var wg sync.WaitGroup
@@ -59,7 +60,7 @@ func downloadAndExtract(ctx context.Context, jsURLs []string, jsDir string, thre
 				if err := os.WriteFile(full, body, 0o644); err != nil {
 					continue
 				}
-				out <- result{path: full, endpoints: extractEndpoints(body)}
+				out <- result{path: full, endpoints: extractEndpoints(body), secrets: extractSecrets(body)}
 			}
 		}()
 	}
@@ -78,12 +79,20 @@ func downloadAndExtract(ctx context.Context, jsURLs []string, jsDir string, thre
 		close(out)
 	}()
 
-	var all []string
+	var allEndpoints []string
+	seenSecret := map[string]bool{}
 	for r := range out {
 		downloaded = append(downloaded, r.path)
-		all = append(all, r.endpoints...)
+		allEndpoints = append(allEndpoints, r.endpoints...)
+		for _, s := range r.secrets {
+			k := s.Type + "|" + s.Match
+			if !seenSecret[k] {
+				seenSecret[k] = true
+				secrets = append(secrets, s)
+			}
+		}
 	}
-	return downloaded, dedupSorted(all)
+	return downloaded, dedupSorted(allEndpoints), secrets
 }
 
 func extractEndpoints(body []byte) []string {

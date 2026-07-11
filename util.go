@@ -21,8 +21,14 @@ var (
 	unsafeFnRe    = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
 )
 
+// silent suppresses the banner and all progress logging (quiet mode).
+var silent bool
+
 // logf prints progress/diagnostics to stderr so stdout stays result-only.
 func logf(format string, a ...any) {
+	if silent {
+		return
+	}
 	msg := fmt.Sprintf(format, a...)
 	if useColor {
 		msg = colorizeTags(msg)

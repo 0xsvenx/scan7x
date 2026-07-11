@@ -69,6 +69,9 @@ var bannerShades = []string{
 // terminal it reveals the logo row by row with a color gradient; when output
 // is piped (or color is off) it prints instantly so scripts stay fast.
 func printBanner() {
+	if silent {
+		return
+	}
 	animate := useColor
 	fmt.Fprintln(os.Stderr)
 	for i, line := range bannerArt {

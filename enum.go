@@ -9,17 +9,23 @@ import (
 	"time"
 )
 
-var defaultSources = []string{"certspotter", "crtsh", "hackertarget", "rapiddns", "otx"}
+// defaultSources are the sources used unless -sources overrides them. anubis
+// and subdomaincenter are registered too but left out of the defaults because
+// they are frequently unavailable; enable them explicitly via -sources.
+var defaultSources = []string{"certspotter", "crtsh", "hackertarget", "rapiddns", "otx", "urlscan"}
 
 type sourceFunc func(ctx context.Context, root string) ([]string, error)
 
 func sourceRegistry() map[string]sourceFunc {
 	return map[string]sourceFunc{
-		"certspotter":  srcCertspotter,
-		"crtsh":        srcCrtsh,
-		"hackertarget": srcHackertarget,
-		"rapiddns":     srcRapiddns,
-		"otx":          srcOTX,
+		"certspotter":     srcCertspotter,
+		"crtsh":           srcCrtsh,
+		"hackertarget":    srcHackertarget,
+		"rapiddns":        srcRapiddns,
+		"otx":             srcOTX,
+		"anubis":          srcAnubis,
+		"subdomaincenter": srcSubdomainCenter,
+		"urlscan":         srcURLScan,
 	}
 }
 
@@ -46,7 +52,9 @@ func enumerateRoot(ctx context.Context, root string, sources []string) EnumResul
 		wg.Add(1)
 		go func(name string, fn sourceFunc) {
 			defer wg.Done()
-			subs, err := fn(ctx, root)
+			sctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+			defer cancel()
+			subs, err := fn(sctx, root)
 			filtered := filterScopeHosts(subs, root)
 			mu.Lock()
 			defer mu.Unlock()
@@ -223,6 +231,78 @@ func srcOTX(ctx context.Context, root string) ([]string, error) {
 	var out []string
 	for _, p := range data.PassiveDNS {
 		out = append(out, p.Hostname)
+	}
+	return out, nil
+}
+
+func srcAnubis(ctx context.Context, root string) ([]string, error) {
+	body, status, err := httpGet(ctx, dataClient, "https://jldc.me/anubis/subdomains/"+root, nil)
+	if err != nil {
+		return nil, err
+	}
+	if status == 404 {
+		return nil, nil // no records for this domain
+	}
+	if status != 200 {
+		return nil, fmt.Errorf("status %d", status)
+	}
+	var names []string
+	if err := json.Unmarshal(body, &names); err != nil {
+		return nil, err
+	}
+	return names, nil
+}
+
+func srcSubdomainCenter(ctx context.Context, root string) ([]string, error) {
+	body, status, err := httpGet(ctx, dataClient, "https://api.subdomain.center/?domain="+root, nil)
+	if err != nil {
+		return nil, err
+	}
+	if status == 429 {
+		return nil, fmt.Errorf("rate limited (429)")
+	}
+	if status != 200 {
+		return nil, fmt.Errorf("status %d", status)
+	}
+	var names []string
+	if err := json.Unmarshal(body, &names); err != nil {
+		return nil, err
+	}
+	return names, nil
+}
+
+func srcURLScan(ctx context.Context, root string) ([]string, error) {
+	body, status, err := httpGet(ctx, dataClient, "https://urlscan.io/api/v1/search/?q=domain:"+root+"&size=1000", nil)
+	if err != nil {
+		return nil, err
+	}
+	if status == 429 {
+		return nil, fmt.Errorf("rate limited (429)")
+	}
+	if status != 200 {
+		return nil, fmt.Errorf("status %d", status)
+	}
+	var data struct {
+		Results []struct {
+			Page struct {
+				Domain string `json:"domain"`
+			} `json:"page"`
+			Task struct {
+				Domain string `json:"domain"`
+			} `json:"task"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(body, &data); err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, r := range data.Results {
+		if r.Page.Domain != "" {
+			out = append(out, r.Page.Domain)
+		}
+		if r.Task.Domain != "" {
+			out = append(out, r.Task.Domain)
+		}
 	}
 	return out, nil
 }

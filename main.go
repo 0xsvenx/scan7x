@@ -13,7 +13,12 @@ import (
 	"time"
 )
 
-const version = "1.0.0"
+// version and commit are overridable at build time via -ldflags
+// "-X main.version=... -X main.commit=...".
+var (
+	version = "1.1.0"
+	commit  = "dev"
+)
 
 type options struct {
 	platform string
@@ -30,6 +35,7 @@ type options struct {
 	refresh  bool
 	yes      bool
 	noColor  bool
+	silent   bool
 }
 
 func main() {
@@ -50,6 +56,7 @@ func main() {
 	flag.BoolVar(&opt.refresh, "refresh", false, "force refresh of cached scope data")
 	flag.BoolVar(&opt.yes, "y", false, "non-interactive: use flags/defaults, never prompt")
 	flag.BoolVar(&opt.noColor, "no-color", false, "disable colored output")
+	flag.BoolVar(&opt.silent, "silent", false, "suppress banner and progress (quiet mode)")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 
 	flag.Usage = func() {
@@ -65,10 +72,11 @@ func main() {
 	flag.Parse()
 
 	if showVersion {
-		fmt.Println("scan7x " + version)
+		fmt.Printf("scan7x %s (%s)\n", version, commit)
 		return
 	}
 
+	silent = opt.silent
 	setupColor(opt.noColor)
 	initHTTP(time.Duration(opt.timeout) * time.Second)
 	printBanner()
@@ -104,17 +112,24 @@ func runProgramMode(ctx context.Context, opt options) error {
 
 	if interactive {
 		fmt.Fprintln(os.Stderr, col(cDim, "  tip: type 'exit' at any prompt to quit"))
-		opt.platform = promptPlatform(reader)
-	}
-	platforms, err := resolvePlatforms(opt.platform)
-	if err != nil {
-		return err
 	}
 
 	// Each iteration handles one program end-to-end. In interactive mode we
 	// loop so a wrong entry re-asks instead of dropping out of the tool, and
-	// the user can scan another program or type 'exit' when done.
+	// the user can change platform, scan another program, or type 'exit'.
+	first := true
 	for {
+		if interactive {
+			if first || promptYesNo(reader, "\nChange platform? [y/N]: ", false) {
+				opt.platform = promptPlatform(reader)
+			}
+		}
+		first = false
+		platforms, err := resolvePlatforms(opt.platform)
+		if err != nil {
+			return err
+		}
+
 		var prog Program
 		if interactive {
 			prog = interactiveSelectProgram(ctx, opt, platforms, reader)
@@ -277,8 +292,19 @@ func runPipeline(ctx context.Context, opt options, prog Program, selected map[Ca
 		jsFromWayback := filterJSURLs(urls)
 
 		if mode == "full" {
-			logf("[*] Probing %d hosts (https/http) ...", len(res.Subdomains))
-			res.LiveHosts = probeHosts(ctx, res.Subdomains, opt.threads)
+			logf("[*] Resolving %d subdomains (DNS) ...", len(res.Subdomains))
+			res.Resolved = resolveHosts(ctx, res.Subdomains, opt.threads*2)
+			logf("[+] %d resolve", len(res.Resolved))
+
+			probeTargets := res.Subdomains
+			if len(res.Resolved) > 0 {
+				probeTargets = nil
+				for _, r := range res.Resolved {
+					probeTargets = append(probeTargets, r.Host)
+				}
+			}
+			logf("[*] Probing %d hosts (https/http) ...", len(probeTargets))
+			res.LiveHosts = probeHosts(ctx, probeTargets, opt.threads)
 			logf("[+] %d live hosts", len(res.LiveHosts))
 
 			var liveURLs []string
@@ -298,9 +324,9 @@ func runPipeline(ctx context.Context, opt options, prog Program, selected map[Ca
 			}
 			res.JSURLs = dedupSorted(jsAll)
 
-			logf("[*] Downloading %d JS files & extracting endpoints ...", len(res.JSURLs))
-			res.JSDownloaded, res.Endpoints = downloadAndExtract(ctx, res.JSURLs, filepath.Join(outDir, "js"), opt.threads)
-			logf("[+] Downloaded %d JS, extracted %d endpoints", len(res.JSDownloaded), len(res.Endpoints))
+			logf("[*] Downloading %d JS files, extracting endpoints & secrets ...", len(res.JSURLs))
+			res.JSDownloaded, res.Endpoints, res.Secrets = downloadAndExtract(ctx, res.JSURLs, filepath.Join(outDir, "js"), opt.threads)
+			logf("[+] Downloaded %d JS, %d endpoints, %d secrets", len(res.JSDownloaded), len(res.Endpoints), len(res.Secrets))
 		} else {
 			res.JSURLs = jsFromWayback
 		}
@@ -493,10 +519,13 @@ func printFinalSummary(res *ReconResult) {
 	row("program", col(cWhite, nonEmpty(res.Program.Name, res.Program.Handle))+"  "+col(cMagenta, "["+res.Program.Platform+"]"))
 	row("scope", num(len(res.Program.InScope))+col(cDim, " in-scope assets"))
 	if res.Mode != "scope" {
-		row("discovery", fmt.Sprintf("%s subdomains  %s live  %s urls",
-			num(len(res.Subdomains)), num(len(res.LiveHosts)), num(len(res.AllURLs))))
-		row("javascript", fmt.Sprintf("%s files  %s endpoints",
-			num(len(res.JSURLs)), num(len(res.Endpoints))))
+		row("discovery", fmt.Sprintf("%s subdomains  %s resolve  %s live  %s urls",
+			num(len(res.Subdomains)), num(len(res.Resolved)), num(len(res.LiveHosts)), num(len(res.AllURLs))))
+		js := fmt.Sprintf("%s files  %s endpoints", num(len(res.JSURLs)), num(len(res.Endpoints)))
+		if len(res.Secrets) > 0 {
+			js += "  " + col(cBold+cYellow, fmt.Sprintf("%d secrets ⚠", len(res.Secrets)))
+		}
+		row("javascript", js)
 	}
 	row("output", col(cCyan, res.OutDir))
 	row("report", col(cCyan, filepath.Join(res.OutDir, "report.md")))

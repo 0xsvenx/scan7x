@@ -18,12 +18,14 @@ type ReconResult struct {
 	Roots        []string
 	KnownHosts   []string
 	Subdomains   []string
+	Resolved     []ResolvedHost
 	EnumPerSrc   map[string]int
 	LiveHosts    []LiveHost
 	AllURLs      []string
 	JSURLs       []string
 	JSDownloaded []string
 	Endpoints    []string
+	Secrets      []Secret
 	Started      time.Time
 	Finished     time.Time
 }
@@ -51,11 +53,24 @@ func writeOutputs(res *ReconResult) error {
 	if len(res.Subdomains) > 0 {
 		_ = writeLines(filepath.Join(base, "subdomains", "all.txt"), res.Subdomains)
 	}
+	if len(res.Resolved) > 0 {
+		var lines, hostsOnly []string
+		for _, r := range res.Resolved {
+			lines = append(lines, fmt.Sprintf("%-50s %s", r.Host, strings.Join(r.IPs, ", ")))
+			hostsOnly = append(hostsOnly, r.Host)
+		}
+		_ = writeLines(filepath.Join(base, "subdomains", "resolved.txt"), lines)
+		_ = writeLines(filepath.Join(base, "subdomains", "resolved_hosts.txt"), hostsOnly)
+	}
 	if len(res.LiveHosts) > 0 {
 		sort.Slice(res.LiveHosts, func(i, j int) bool { return res.LiveHosts[i].URL < res.LiveHosts[j].URL })
 		var lines, urls []string
 		for _, lh := range res.LiveHosts {
-			lines = append(lines, fmt.Sprintf("%-3d  %-55s  %s", lh.Status, lh.URL, lh.Title))
+			srv := lh.Server
+			if srv == "" {
+				srv = "-"
+			}
+			lines = append(lines, fmt.Sprintf("%-3d  %-55s  [%-18s]  %s", lh.Status, lh.URL, truncateStr(srv, 18), lh.Title))
 			urls = append(urls, lh.URL)
 		}
 		_ = writeLines(filepath.Join(base, "live", "live_hosts.txt"), lines)
@@ -69,6 +84,13 @@ func writeOutputs(res *ReconResult) error {
 	}
 	if len(res.Endpoints) > 0 {
 		_ = writeLines(filepath.Join(base, "js", "endpoints.txt"), res.Endpoints)
+	}
+	if len(res.Secrets) > 0 {
+		var lines []string
+		for _, s := range res.Secrets {
+			lines = append(lines, fmt.Sprintf("%-22s %s", s.Type, s.Match))
+		}
+		_ = writeLines(filepath.Join(base, "js", "secrets.txt"), lines)
 	}
 	if err := writeString(filepath.Join(base, "report.md"), buildReport(res)); err != nil {
 		return err
@@ -92,11 +114,13 @@ func buildSummary(res *ReconResult) string {
 		ScopeCounts  map[string]int `json:"scope_counts"`
 		Roots        int            `json:"enumeration_roots"`
 		Subdomains   int            `json:"subdomains"`
+		Resolved     int            `json:"resolved"`
 		LiveHosts    int            `json:"live_hosts"`
 		URLs         int            `json:"urls"`
 		JSFiles      int            `json:"js_files"`
 		JSDownloaded int            `json:"js_downloaded"`
 		Endpoints    int            `json:"endpoints"`
+		Secrets      int            `json:"secrets"`
 		EnumPerSrc   map[string]int `json:"enum_per_source"`
 	}{
 		Program:      res.Program.Name,
@@ -109,11 +133,13 @@ func buildSummary(res *ReconResult) string {
 		ScopeCounts:  sc,
 		Roots:        len(res.Roots),
 		Subdomains:   len(res.Subdomains),
+		Resolved:     len(res.Resolved),
 		LiveHosts:    len(res.LiveHosts),
 		URLs:         len(res.AllURLs),
 		JSFiles:      len(res.JSURLs),
 		JSDownloaded: len(res.JSDownloaded),
 		Endpoints:    len(res.Endpoints),
+		Secrets:      len(res.Secrets),
 		EnumPerSrc:   res.EnumPerSrc,
 	}
 	b, _ := json.MarshalIndent(s, "", "  ")
@@ -148,6 +174,9 @@ func buildReport(res *ReconResult) string {
 		b.WriteString("\n## Enumeration & discovery\n\n")
 		fmt.Fprintf(&b, "- **Wildcard roots enumerated:** %d\n", len(res.Roots))
 		fmt.Fprintf(&b, "- **Subdomains discovered:** %d\n", len(res.Subdomains))
+		if len(res.Resolved) > 0 {
+			fmt.Fprintf(&b, "- **Resolving (DNS):** %d\n", len(res.Resolved))
+		}
 		if len(res.EnumPerSrc) > 0 {
 			var keys []string
 			for k := range res.EnumPerSrc {
@@ -166,6 +195,9 @@ func buildReport(res *ReconResult) string {
 		fmt.Fprintf(&b, "- **URLs (Wayback + crawl):** %d\n", len(res.AllURLs))
 		fmt.Fprintf(&b, "- **JavaScript files:** %d (downloaded %d)\n", len(res.JSURLs), len(res.JSDownloaded))
 		fmt.Fprintf(&b, "- **Endpoints extracted from JS:** %d\n", len(res.Endpoints))
+		if len(res.Secrets) > 0 {
+			fmt.Fprintf(&b, "- **Secrets / leads in JS:** %d ⚠️\n", len(res.Secrets))
+		}
 
 		if len(res.LiveHosts) > 0 {
 			b.WriteString("\n### Live hosts (preview)\n\n```\n")
@@ -185,6 +217,16 @@ func buildReport(res *ReconResult) string {
 			b.WriteString("```\n")
 			if len(res.Endpoints) > 40 {
 				fmt.Fprintf(&b, "_… %d more in `js/endpoints.txt`_\n", len(res.Endpoints)-40)
+			}
+		}
+		if len(res.Secrets) > 0 {
+			b.WriteString("\n### Secrets / leads in JS ⚠️ (verify manually)\n\n```\n")
+			for _, s := range res.Secrets[:min(len(res.Secrets), 40)] {
+				fmt.Fprintf(&b, "%-22s %s\n", s.Type, s.Match)
+			}
+			b.WriteString("```\n")
+			if len(res.Secrets) > 40 {
+				fmt.Fprintf(&b, "_… %d more in `js/secrets.txt`_\n", len(res.Secrets)-40)
 			}
 		}
 	}
@@ -214,6 +256,9 @@ func fileTree(res *ReconResult) string {
 		if len(res.Subdomains) > 0 {
 			b.WriteString("├─ subdomains/all.txt\n")
 		}
+		if len(res.Resolved) > 0 {
+			b.WriteString("├─ subdomains/resolved.txt  (host → IPs)\n")
+		}
 		if len(res.LiveHosts) > 0 {
 			b.WriteString("├─ live/live_hosts.txt\n")
 		}
@@ -221,7 +266,10 @@ func fileTree(res *ReconResult) string {
 			b.WriteString("├─ urls/all_urls.txt + js_urls.txt\n")
 		}
 		if len(res.JSDownloaded) > 0 || len(res.Endpoints) > 0 {
-			b.WriteString("└─ js/  (downloaded .js + endpoints.txt)\n")
+			b.WriteString("├─ js/  (downloaded .js + endpoints.txt)\n")
+		}
+		if len(res.Secrets) > 0 {
+			b.WriteString("└─ js/secrets.txt  ⚠️\n")
 		}
 	}
 	return b.String()

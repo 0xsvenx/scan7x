@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"html"
+	"io"
+	"net/http"
 	"regexp"
 	"strings"
 	"sync"
@@ -10,9 +12,12 @@ import (
 
 // LiveHost is a host that answered an HTTP(S) request.
 type LiveHost struct {
-	URL    string `json:"url"`
-	Status int    `json:"status"`
-	Title  string `json:"title"`
+	URL      string `json:"url"`
+	Status   int    `json:"status"`
+	Title    string `json:"title"`
+	Server   string `json:"server,omitempty"`
+	Length   int64  `json:"content_length,omitempty"`
+	Location string `json:"location,omitempty"`
 }
 
 var (
@@ -63,11 +68,25 @@ func probeHosts(ctx context.Context, hosts []string, threads int) []LiveHost {
 func probeOne(ctx context.Context, host string) (LiveHost, bool) {
 	for _, scheme := range []string{"https://", "http://"} {
 		u := scheme + host
-		body, status, err := httpGet(ctx, probeClient, u, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 		if err != nil {
 			continue
 		}
-		return LiveHost{URL: u, Status: status, Title: extractTitle(body)}, true
+		req.Header.Set("User-Agent", userAgent)
+		resp, err := probeClient.Do(req)
+		if err != nil {
+			continue
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512<<10))
+		resp.Body.Close()
+		return LiveHost{
+			URL:      u,
+			Status:   resp.StatusCode,
+			Title:    extractTitle(body),
+			Server:   resp.Header.Get("Server"),
+			Length:   resp.ContentLength,
+			Location: resp.Header.Get("Location"),
+		}, true
 	}
 	return LiveHost{}, false
 }
