@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
 
 // useColor is set once at startup and gates all ANSI output.
@@ -58,19 +59,36 @@ var bannerArt = []string{
 	`╚══════╝ ╚═════╝╚═╝  ╚═╝╚═╝  ╚═══╝   ╚═╝  ╚═╝  ╚═╝`,
 }
 
-// printBanner renders the scan7x logo and tagline to stderr.
+// bannerShades is a cyan→blue vertical gradient (256-color) for the logo rows.
+var bannerShades = []string{
+	"\033[38;5;51m", "\033[38;5;45m", "\033[38;5;39m",
+	"\033[38;5;33m", "\033[38;5;27m", "\033[38;5;21m",
+}
+
+// printBanner renders the scan7x logo and tagline to stderr. On a real
+// terminal it reveals the logo row by row with a color gradient; when output
+// is piped (or color is off) it prints instantly so scripts stay fast.
 func printBanner() {
-	var b strings.Builder
-	b.WriteByte('\n')
-	for _, line := range bannerArt {
-		b.WriteString("  " + col(cCyan, line) + "\n")
+	animate := useColor
+	fmt.Fprintln(os.Stderr)
+	for i, line := range bannerArt {
+		code := cCyan
+		if animate && i < len(bannerShades) {
+			code = bannerShades[i]
+		}
+		fmt.Fprintln(os.Stderr, "  "+col(code, line))
+		if animate {
+			time.Sleep(55 * time.Millisecond)
+		}
 	}
-	b.WriteByte('\n')
-	b.WriteString("  " + col(cBold+cWhite, "scan7x") + " " +
-		col(cGray, "· bug-bounty recon & enumeration engine") + "  " +
-		col(cGreen, "v"+version) + "\n")
-	b.WriteString("  " + col(cDim, "pick a program on any platform  →  scan  →  organized recon folder") + "\n\n")
-	fmt.Fprint(os.Stderr, b.String())
+	if animate {
+		time.Sleep(90 * time.Millisecond)
+	}
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, "  "+col(cBold+cWhite, "scan7x")+" "+
+		col(cGray, "· bug-bounty recon & enumeration engine")+"  "+col(cGreen, "v"+version))
+	fmt.Fprintln(os.Stderr, "  "+col(cDim, "pick a program on any platform  →  scan  →  organized recon folder"))
+	fmt.Fprintln(os.Stderr)
 }
 
 // colorizeTags adds color to the [*] / [+] / [warn] / [!] log prefixes.

@@ -176,6 +176,27 @@ func TestPromptYesNo(t *testing.T) {
 	}
 }
 
+func TestPromptCategoriesMenu(t *testing.T) {
+	catIDs := map[Category][]string{CatDomain: {"a", "b"}, CatAPI: {"x"}}
+	// available list follows allCategories order: domains (1), then apis (2)
+	cases := []struct {
+		in   string
+		want map[Category]bool
+	}{
+		{"1\n", map[Category]bool{CatDomain: true}},
+		{"2\n", map[Category]bool{CatAPI: true}},
+		{"1,2\n", map[Category]bool{CatDomain: true, CatAPI: true}},
+		{"0\n", map[Category]bool{CatDomain: true, CatAPI: true}},
+		{"\n", map[Category]bool{CatDomain: true, CatAPI: true}}, // default [0] = all
+	}
+	for _, c := range cases {
+		r := bufio.NewReader(strings.NewReader(c.in))
+		if got := promptCategoriesMenu(r, catIDs); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("promptCategoriesMenu(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
 func TestResolveCategories(t *testing.T) {
 	sel, err := resolveCategories("domains,apis")
 	if err != nil {

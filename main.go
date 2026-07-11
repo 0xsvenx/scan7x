@@ -141,14 +141,7 @@ func runProgramMode(ctx context.Context, opt options) error {
 		catIDs := categoryIdentifiers(prog)
 		var selected map[Category]bool
 		if interactive {
-			for {
-				opt.pull = promptCategories(reader, catIDs)
-				selected, err = resolveCategories(opt.pull)
-				if err == nil {
-					break
-				}
-				fmt.Fprintln(os.Stderr, col(cYellow, "  "+err.Error()+" — try again (or 'exit')"))
-			}
+			selected = promptCategoriesMenu(reader, catIDs)
 			opt.recon = promptRecon(reader)
 		} else {
 			if selected, err = resolveCategories(opt.pull); err != nil {
@@ -558,45 +551,83 @@ func promptYesNo(r *bufio.Reader, prompt string, def bool) bool {
 
 func promptPlatform(r *bufio.Reader) string {
 	opts := []string{"all", "hackerone", "bugcrowd", "intigriti", "yeswehack"}
-	fmt.Fprintln(os.Stderr, "Select platform:")
-	for i, o := range opts {
-		fmt.Fprintf(os.Stderr, "  %d) %s\n", i+1, o)
-	}
-	s := promptLine(r, "Choice [1]: ", "1")
-	if n, err := strconv.Atoi(s); err == nil && n >= 1 && n <= len(opts) {
-		return opts[n-1]
-	}
-	s = strings.ToLower(s)
-	for _, o := range opts {
-		if o == s {
-			return o
+	for {
+		fmt.Fprintln(os.Stderr, "Select platform:")
+		for i, o := range opts {
+			fmt.Fprintf(os.Stderr, "  %d) %s\n", i+1, o)
 		}
+		s := promptLine(r, "Choice [1]: ", "1")
+		if n, err := strconv.Atoi(s); err == nil && n >= 1 && n <= len(opts) {
+			return opts[n-1]
+		}
+		low := strings.ToLower(s)
+		for _, o := range opts {
+			if o == low {
+				return o
+			}
+		}
+		fmt.Fprintf(os.Stderr, "%s\n", col(cYellow, fmt.Sprintf("  pick a number 1-%d (or 'exit')", len(opts))))
 	}
-	return "all"
 }
 
-func promptCategories(r *bufio.Reader, catIDs map[Category][]string) string {
-	fmt.Fprintln(os.Stderr, "\nScope found:")
+// promptCategoriesMenu shows the scope categories as a numbered menu and
+// returns the chosen set. It re-asks on invalid input, supports "1,3" style
+// multi-select, and "0" for all.
+func promptCategoriesMenu(r *bufio.Reader, catIDs map[Category][]string) map[Category]bool {
+	var available []Category
 	for _, c := range allCategories {
-		if n := len(catIDs[c]); n > 0 {
-			fmt.Fprintf(os.Stderr, "   - %-10s %d\n", c, n)
+		if len(catIDs[c]) > 0 {
+			available = append(available, c)
 		}
 	}
-	fmt.Fprintln(os.Stderr, "What to pull? comma list (domains,apis,wildcards,...) or 'all'")
-	return promptLine(r, "Choice [all]: ", "all")
+	if len(available) == 0 {
+		return map[Category]bool{}
+	}
+	for {
+		fmt.Fprintln(os.Stderr, "\nScope found — what to pull?")
+		for i, c := range available {
+			fmt.Fprintf(os.Stderr, "  %d) %-10s %d\n", i+1, c, len(catIDs[c]))
+		}
+		fmt.Fprintln(os.Stderr, "  0) all")
+		s := promptLine(r, "Choice (e.g. 1,3 or 0 for all) [0]: ", "0")
+		if s == "0" || strings.EqualFold(s, "all") {
+			sel := map[Category]bool{}
+			for _, c := range available {
+				sel[c] = true
+			}
+			return sel
+		}
+		picked := map[Category]bool{}
+		valid := true
+		for _, part := range strings.Split(s, ",") {
+			n, err := strconv.Atoi(strings.TrimSpace(part))
+			if err != nil || n < 1 || n > len(available) {
+				valid = false
+				break
+			}
+			picked[available[n-1]] = true
+		}
+		if valid && len(picked) > 0 {
+			return picked
+		}
+		fmt.Fprintln(os.Stderr, col(cYellow, "  pick numbers from the list (e.g. 1,3) or 0 for all"))
+	}
 }
 
 func promptRecon(r *bufio.Reader) string {
-	fmt.Fprintln(os.Stderr, "\nRecon depth:")
-	fmt.Fprintln(os.Stderr, "  1) scope    — only download & categorize scope")
-	fmt.Fprintln(os.Stderr, "  2) passive  — scope + passive subdomain enum + Wayback JS list")
-	fmt.Fprintln(os.Stderr, "  3) full     — enum + live probe + crawl + download JS + endpoints")
-	switch promptLine(r, "Choice [3]: ", "3") {
-	case "1", "scope":
-		return "scope"
-	case "2", "passive":
-		return "passive"
-	default:
-		return "full"
+	for {
+		fmt.Fprintln(os.Stderr, "\nRecon depth:")
+		fmt.Fprintln(os.Stderr, "  1) scope    — only download & categorize scope")
+		fmt.Fprintln(os.Stderr, "  2) passive  — scope + passive subdomain enum + Wayback JS list")
+		fmt.Fprintln(os.Stderr, "  3) full     — enum + live probe + crawl + download JS + endpoints")
+		switch promptLine(r, "Choice [3]: ", "3") {
+		case "1", "scope":
+			return "scope"
+		case "2", "passive":
+			return "passive"
+		case "3", "full":
+			return "full"
+		}
+		fmt.Fprintln(os.Stderr, col(cYellow, "  pick 1, 2, or 3 (or 'exit')"))
 	}
 }
