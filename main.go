@@ -39,6 +39,19 @@ type options struct {
 }
 
 func main() {
+	// Subcommands (e.g. `scan7x project ...`) are handled before flag parsing,
+	// since they use their own flag sets.
+	if len(os.Args) > 1 && os.Args[1] == "project" {
+		setupColor(false)
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer stop()
+		if err := runProject(ctx, os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, col(cRed, "error: ")+err.Error())
+			os.Exit(1)
+		}
+		return
+	}
+
 	var opt options
 	var showVersion bool
 
@@ -66,6 +79,8 @@ func main() {
 		fmt.Fprintln(os.Stderr, "  scan7x -target \"red bull\"                # search all platforms, full recon")
 		fmt.Fprintln(os.Stderr, "  scan7x -platform hackerone -target uber -pull domains,wildcards -recon passive")
 		fmt.Fprintln(os.Stderr, "  scan7x -root example.com -recon full     # skip scope lookup")
+		fmt.Fprintln(os.Stderr, "  scan7x project create shopify -target shopify   # persistent project (SQLite)")
+		fmt.Fprintln(os.Stderr, "  scan7x project update shopify            # re-scan and show what's NEW")
 		fmt.Fprintln(os.Stderr, "\nFlags:")
 		flag.PrintDefaults()
 	}
@@ -245,20 +260,28 @@ func runRootMode(ctx context.Context, opt options) error {
 }
 
 func runPipeline(ctx context.Context, opt options, prog Program, selected map[Category]bool) error {
-	mode := strings.ToLower(strings.TrimSpace(opt.recon))
-	started := time.Now()
-
 	outDir := opt.out
 	if strings.TrimSpace(outDir) == "" {
 		outDir = filepath.Join("output", safeDirName(prog))
 	}
+	res := computeRecon(ctx, opt, prog, selected, outDir)
+	if err := writeOutputs(res); err != nil {
+		return fmt.Errorf("writing outputs: %w", err)
+	}
+	printFinalSummary(res)
+	return nil
+}
 
+// computeRecon runs the recon pipeline and returns the aggregated result
+// without persisting it (callers decide whether to write files or a DB).
+func computeRecon(ctx context.Context, opt options, prog Program, selected map[Category]bool, outDir string) *ReconResult {
+	mode := strings.ToLower(strings.TrimSpace(opt.recon))
 	res := &ReconResult{
 		Program:    prog,
 		OutDir:     outDir,
 		Mode:       mode,
 		CatIDs:     selectedCategoryIDs(prog, selected),
-		Started:    started,
+		Started:    time.Now(),
 		EnumPerSrc: map[string]int{},
 	}
 
@@ -331,13 +354,8 @@ func runPipeline(ctx context.Context, opt options, prog Program, selected map[Ca
 			res.JSURLs = jsFromWayback
 		}
 	}
-
 	res.Finished = time.Now()
-	if err := writeOutputs(res); err != nil {
-		return fmt.Errorf("writing outputs: %w", err)
-	}
-	printFinalSummary(res)
-	return nil
+	return res
 }
 
 // --- selection helpers ---------------------------------------------------

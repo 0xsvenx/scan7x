@@ -51,7 +51,7 @@ tar -xzf scan7x_v1.1.0_linux_amd64.tar.gz
 ./scan7x
 ```
 
-### With Go (1.22+)
+### With Go (1.25+)
 
 ```bash
 go install github.com/0xsvenx/scan7x@latest    # installs to $(go env GOPATH)/bin
@@ -143,6 +143,55 @@ platform + target  ─▶  scope (categorized)  ─▶  enumeration  ─▶  liv
    for `<script src>` tags, then in-scope JS files are downloaded, and endpoints
    **and secrets** are extracted from them.
 5. **Report**: a report, summary, and organized folders are written to disk.
+
+---
+
+## Projects (persistent recon + diff)
+
+Track a target over time in a real **SQLite** database (`~/.scan7x/scan7x.db`,
+openable with `sqlite3`/DBeaver). Re-scan whenever you want and scan7x tells you
+exactly **what's new** — new subdomains, new live hosts, and even new assets the
+program added to its scope.
+
+```bash
+# create a project bound to a program and run the first scan
+scan7x project create shopify -platform hackerone -target shopify
+
+# re-scan later — highlights NEW subdomains / scope assets since last time
+scan7x project update shopify
+
+scan7x project list                 # all projects, with counts
+scan7x project show shopify         # stats for one project
+scan7x project report shopify       # (re)generate report.md from the database
+scan7x project delete shopify
+```
+
+Example diff on an update:
+
+```
+  ▲ NEW SINCE LAST SCAN
+
+  NEW SCOPE ASSET (1)
+    + *.checkout.shopify.com
+  NEW SUBDOMAIN (3)
+    + api-edge.shopify.com
+    + staging-2.shopify.com
+    + internal-tools.shopify.com
+```
+
+**Smart Resume:** scans checkpoint each stage (`enum → probe → js`) to the
+database. If a scan is interrupted (Ctrl+C, crash, dropped connection), just run
+`project update` again — it continues from the last completed stage instead of
+starting over, and skips JavaScript it already downloaded.
+
+You can also track a raw domain that isn't a bounty program:
+
+```bash
+scan7x project create mybox -root example.com -recon full
+```
+
+> The database lives under `~/.scan7x/` (override the base dir with
+> `SCAN7X_HOME`, or the DB path with `SCAN7X_DB`).
 
 ---
 
